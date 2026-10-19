@@ -41,6 +41,7 @@ func RecordUserDevice(device *models.UserDevice) (bool, error) {
 			"user_agent":      device.UserAgent,
 			"ip_address":      device.IPAddress,
 			"last_login_at":   now,
+			"logged_out_at":   nil,
 			"login_count":     gorm.Expr("user_devices.login_count + 1"),
 		}),
 	}).Create(device).Error
@@ -48,6 +49,31 @@ func RecordUserDevice(device *models.UserDevice) (bool, error) {
 		return false, err
 	}
 	return existing == 0, nil
+}
+
+// MarkDeviceLoggedOut flags the device as logged out. Returns false if the device is unknown.
+func MarkDeviceLoggedOut(userID uint64, deviceID string) (bool, error) {
+	if db.DB == nil {
+		return false, errors.New("database not connected")
+	}
+
+	res := db.DB.Model(&models.UserDevice{}).
+		Where("user_id = ? AND device_id = ?", userID, deviceID).
+		Update("logged_out_at", time.Now())
+	return res.RowsAffected > 0, res.Error
+}
+
+// IsDeviceLoggedOut reports whether the device exists and has been logged out.
+func IsDeviceLoggedOut(userID uint64, deviceID string) (bool, error) {
+	if db.DB == nil {
+		return false, errors.New("database not connected")
+	}
+
+	var count int64
+	err := db.DB.Model(&models.UserDevice{}).
+		Where("user_id = ? AND device_id = ? AND logged_out_at IS NOT NULL", userID, deviceID).
+		Count(&count).Error
+	return count > 0, err
 }
 
 // GetUserDevices returns all devices a user has logged in from, most recent first.

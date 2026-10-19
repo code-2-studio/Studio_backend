@@ -69,6 +69,7 @@ type TokenClaims struct {
 	Email     string   `json:"email"`
 	Roles     []string `json:"roles,omitempty"`
 	TokenType string   `json:"token_type"` // "access" or "refresh"
+	DeviceID  string   `json:"device_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -98,8 +99,9 @@ func getJWTSecret() []byte {
 	return []byte(ephemeralSecret)
 }
 
-// GenerateTokenPair generates both an access token and a refresh token
-func GenerateTokenPair(userID uint64, email string, roles []string) (*TokenPair, error) {
+// GenerateTokenPair generates both an access token and a refresh token.
+// deviceID binds the pair to the device it was issued for; pass "" when unknown.
+func GenerateTokenPair(userID uint64, email string, roles []string, deviceID string) (*TokenPair, error) {
 	secret := getJWTSecret()
 	now := time.Now()
 
@@ -110,6 +112,7 @@ func GenerateTokenPair(userID uint64, email string, roles []string) (*TokenPair,
 		Email:     email,
 		Roles:     roles,
 		TokenType: TokenTypeAccess,
+		DeviceID:  deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprintf("%d", userID),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -130,6 +133,7 @@ func GenerateTokenPair(userID uint64, email string, roles []string) (*TokenPair,
 		UserID:    userID,
 		Email:     email,
 		TokenType: TokenTypeRefresh,
+		DeviceID:  deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprintf("%d", userID),
 			IssuedAt:  jwt.NewNumericDate(now),

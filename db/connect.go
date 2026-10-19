@@ -135,6 +135,7 @@ func autoMigrate(database *gorm.DB) {
 		&models.RolePermission{},
 		&models.User{},
 		&models.UserRole{},
+		&models.UserDevice{},
 	)
 	if err != nil {
 		utils.Logger.Errorw("❌ Database auto-migration failed", "error", err)

@@ -20,9 +20,70 @@ type RegisterRequest struct {
 	Password string  `json:"password"`
 }
 
+// DeviceInfo describes the client device used to log in.
+// It is optional; today it is only recorded, later it can be used to limit logins per device.
+type DeviceInfo struct {
+	DeviceID       string `json:"device_id"`
+	DeviceType     string `json:"device_type"`
+	OS             string `json:"os"`
+	OSVersion      string `json:"os_version"`
+	Browser        string `json:"browser"`
+	BrowserVersion string `json:"browser_version"`
+	UserAgent      string `json:"user_agent"`
+}
+
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email      string      `json:"email"`
+	Password   string      `json:"password"`
+	DeviceInfo *DeviceInfo `json:"device_info,omitempty"`
+}
+
+// truncate caps client-supplied strings so they fit the column sizes.
+func truncate(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
+}
+
+// LoginDevice is the device block returned in the login response.
+type LoginDevice struct {
+	DeviceID    string `json:"device_id"`
+	IsNewDevice bool   `json:"is_new_device"`
+}
+
+// recordLoginDevice stores the device used for this login and returns the response
+// block describing it (nil if no device was sent). Failures are logged, never block login.
+func recordLoginDevice(c *fiber.Ctx, userID uint64, info *DeviceInfo) *LoginDevice {
+	if info == nil || strings.TrimSpace(info.DeviceID) == "" {
+		return nil
+	}
+
+	userAgent := info.UserAgent
+	if userAgent == "" {
+		userAgent = c.Get(fiber.HeaderUserAgent)
+	}
+
+	device := models.UserDevice{
+		UserID:         userID,
+		DeviceID:       truncate(info.DeviceID, 100),
+		DeviceType:     truncate(info.DeviceType, 30),
+		OS:             truncate(info.OS, 50),
+		OSVersion:      truncate(info.OSVersion, 50),
+		Browser:        truncate(info.Browser, 50),
+		BrowserVersion: truncate(info.BrowserVersion, 50),
+		UserAgent:      truncate(userAgent, 512),
+		IPAddress:      truncate(c.IP(), 45),
+	}
+
+	isNew, err := domain.RecordUserDevice(&device)
+	if err != nil {
+		utils.Logger.Errorw("Failed to record login device", "user_id", userID, "error", err)
+		return nil
+	}
+
+	return &LoginDevice{DeviceID: device.DeviceID, IsNewDevice: isNew}
 }
 
 // Register creates a new user account
@@ -102,6 +163,7 @@ func Register(c *fiber.Ctx) error {
 
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token"`
+	DeviceID     string `json:"device_id,omitempty"`
 }
 
 // Login authenticates a user and returns an access token and refresh token
@@ -154,14 +216,21 @@ func Login(c *fiber.Ctx) error {
 	user.LastLogin = &now
 	_ = domain.UpdateUser(user)
 
+	// Record the device used for this login (no device limit enforced yet)
+	deviceResult := recordLoginDevice(c, user.ID, req.DeviceInfo)
+	deviceID := ""
+	if deviceResult != nil {
+		deviceID = deviceResult.DeviceID
+	}
+
 	// Collect user role names
 	roleNames := make([]string, 0, len(user.Roles))
 	for _, r := range user.Roles {
 		roleNames = append(roleNames, r.Name)
 	}
 
-	// Generate access token & refresh token
-	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames)
+	// Generate access token & refresh token (bound to the device)
+	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, deviceID)
 	if err != nil {
 		utils.Logger.Errorw("Failed to generate token pair", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -178,6 +247,7 @@ func Login(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"user":   user.ToResponse(),
 			"tokens": tokens,
+			"device": deviceResult,
 		},
 	})
 }
@@ -211,6 +281,26 @@ func RefreshToken(c *fiber.Ctx) error {
 		})
 	}
 
+	// The refresh token is bound to the device it was issued for
+	reqDeviceID := truncate(req.DeviceID, 100)
+	if claims.DeviceID != "" {
+		if reqDeviceID != "" && reqDeviceID != claims.DeviceID {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusForbidden,
+				"message": "Refresh token does not belong to this device",
+			})
+		}
+
+		if loggedOut, _ := domain.IsDeviceLoggedOut(claims.UserID, claims.DeviceID); loggedOut {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusUnauthorized,
+				"message": "Device session terminated, please log in again",
+			})
+		}
+	}
+
 	user, err := domain.GetUserByID(claims.UserID)
 	if err != nil || user == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -233,7 +323,7 @@ func RefreshToken(c *fiber.Ctx) error {
 		roleNames = append(roleNames, r.Name)
 	}
 
-	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames)
+	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, claims.DeviceID)
 	if err != nil {
 		utils.Logger.Errorw("Failed to generate token pair on refresh", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -249,6 +339,7 @@ func RefreshToken(c *fiber.Ctx) error {
 		"message": "Token refreshed successfully",
 		"data": fiber.Map{
 			"tokens": tokens,
+			"device": fiber.Map{"device_id": claims.DeviceID},
 		},
 	})
 }
@@ -257,27 +348,56 @@ type LogoutRequest struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-// Logout invalidates the active access token and/or refresh token
+// Logout invalidates the active access token and/or refresh token and marks the device logged out
 func Logout(c *fiber.Ctx) error {
-	// 1. Invalidate Access Token from Authorization Header if present
-	authHeader := c.Get("Authorization")
-	if authHeader != "" {
+	var req LogoutRequest
+	hasBody := c.BodyParser(&req) == nil
+	refreshToken := ""
+	if hasBody {
+		refreshToken = strings.TrimSpace(req.RefreshToken)
+	}
+
+	accessToken := ""
+	if authHeader := c.Get("Authorization"); authHeader != "" {
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			accessToken := strings.TrimSpace(parts[1])
-			utils.RevokeToken(accessToken)
+			accessToken = strings.TrimSpace(parts[1])
 		}
 	}
 
-	// 2. Invalidate Refresh Token if provided in body
-	var req LogoutRequest
-	if err := c.BodyParser(&req); err == nil && req.RefreshToken != "" {
-		utils.RevokeToken(strings.TrimSpace(req.RefreshToken))
+	// Work out which user/device is logging out before the tokens are revoked
+	var userID uint64
+	deviceID := ""
+	if accessToken != "" {
+		if claims, err := utils.ValidateToken(accessToken, utils.TokenTypeAccess); err == nil {
+			userID, deviceID = claims.UserID, claims.DeviceID
+		}
+	}
+	if deviceID == "" && refreshToken != "" {
+		if claims, err := utils.ValidateToken(refreshToken, utils.TokenTypeRefresh); err == nil {
+			userID, deviceID = claims.UserID, claims.DeviceID
+		}
+	}
+
+	utils.RevokeToken(accessToken)
+	utils.RevokeToken(refreshToken)
+
+	deviceLoggedOut := false
+	if deviceID != "" {
+		var err error
+		deviceLoggedOut, err = domain.MarkDeviceLoggedOut(userID, deviceID)
+		if err != nil {
+			utils.Logger.Errorw("Failed to mark device logged out", "user_id", userID, "error", err)
+		}
 	}
 
 	return c.JSON(fiber.Map{
 		"status":  true,
 		"code":    http.StatusOK,
 		"message": "Logged out successfully",
+		"data": fiber.Map{
+			"device_id":         deviceID,
+			"device_logged_out": deviceLoggedOut,
+		},
 	})
 }

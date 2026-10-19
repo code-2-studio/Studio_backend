@@ -48,11 +48,23 @@ func main() {
 	routes.Setup(app)
 
 	// Start server in background
+	
+	// Start server on the host-provided port
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = cfg.Port
+	}
+	if port == "" {
+		port = "8080"
+	}
+
+	addr := "0.0.0.0:" + port
+	utils.Info("Server starting", "address", addr, "env", cfg.Env)
+
 	go func() {
-		addr := "127.0.0.1:" + cfg.Port
-		utils.Info("Server starting", "address", addr, "env", cfg.Env)
 		if err := app.Listen(addr); err != nil {
-			utils.Logger.Fatalf("Server failed to start: %v", err)
+			utils.Logger.Errorf("Server failed to start: %v", err)
+			os.Exit(1)
 		}
 	}()
 

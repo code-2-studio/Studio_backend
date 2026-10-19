@@ -20,9 +20,67 @@ type RegisterRequest struct {
 	Password string  `json:"password"`
 }
 
+// DeviceInfo describes the client device used to log in.
+// It is optional; today it is only recorded, later it can be used to limit logins per device.
+type DeviceInfo struct {
+	DeviceID       string `json:"device_id"`
+	DeviceType     string `json:"device_type"`
+	OS             string `json:"os"`
+	OSVersion      string `json:"os_version"`
+	Browser        string `json:"browser"`
+	BrowserVersion string `json:"browser_version"`
+	UserAgent      string `json:"user_agent"`
+}
+
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email      string      `json:"email"`
+	Password   string      `json:"password"`
+	DeviceInfo *DeviceInfo `json:"device_info,omitempty"`
+}
+
+// truncate caps client-supplied strings so they fit the column sizes.
+func truncate(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
+}
+
+// recordLoginDevice stores the device used for this login and returns the response
+// block describing it (nil if no device was sent). Failures are logged, never block login.
+func recordLoginDevice(c *fiber.Ctx, userID uint64, info *DeviceInfo) fiber.Map {
+	if info == nil || strings.TrimSpace(info.DeviceID) == "" {
+		return nil
+	}
+
+	userAgent := info.UserAgent
+	if userAgent == "" {
+		userAgent = c.Get(fiber.HeaderUserAgent)
+	}
+
+	device := models.UserDevice{
+		UserID:         userID,
+		DeviceID:       truncate(info.DeviceID, 100),
+		DeviceType:     truncate(info.DeviceType, 30),
+		OS:             truncate(info.OS, 50),
+		OSVersion:      truncate(info.OSVersion, 50),
+		Browser:        truncate(info.Browser, 50),
+		BrowserVersion: truncate(info.BrowserVersion, 50),
+		UserAgent:      truncate(userAgent, 512),
+		IPAddress:      truncate(c.IP(), 45),
+	}
+
+	isNew, err := domain.RecordUserDevice(&device)
+	if err != nil {
+		utils.Logger.Errorw("Failed to record login device", "user_id", userID, "error", err)
+		return nil
+	}
+
+	return fiber.Map{
+		"device_id":     device.DeviceID,
+		"is_new_device": isNew,
+	}
 }
 
 // Register creates a new user account
@@ -154,6 +212,9 @@ func Login(c *fiber.Ctx) error {
 	user.LastLogin = &now
 	_ = domain.UpdateUser(user)
 
+	// Record the device used for this login (no device limit enforced yet)
+	deviceResult := recordLoginDevice(c, user.ID, req.DeviceInfo)
+
 	// Collect user role names
 	roleNames := make([]string, 0, len(user.Roles))
 	for _, r := range user.Roles {
@@ -178,6 +239,7 @@ func Login(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"user":   user.ToResponse(),
 			"tokens": tokens,
+			"device": deviceResult,
 		},
 	})
 }

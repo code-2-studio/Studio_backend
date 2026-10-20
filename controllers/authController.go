@@ -350,14 +350,33 @@ func Login(c *fiber.Ctx) error {
 		})
 	}
 
+	// The codes of the feature groups, features and permissions the user holds. The shutterx superadmin always has
+	// every permission (worked out live, so permissions created later are included at once); anyone
+	// else has what their roles were given.
+	var permissions models.PermissionCodeLists
+	if user.IsRootSuperAdmin() {
+		permissions, err = domain.GetDomainPermissionCodes(user.Domain)
+	} else {
+		permissions, err = domain.GetUserPermissionCodes(user.ID)
+	}
+	if err != nil {
+		utils.Logger.Errorw("Failed to load user permissions", "user_id", user.ID, "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusInternalServerError,
+			"message": "Failed to load user permissions",
+		})
+	}
+
 	return c.JSON(fiber.Map{
 		"status":  true,
 		"code":    http.StatusOK,
 		"message": "Login successful",
 		"data": fiber.Map{
-			"user":   user.ToResponse(),
-			"tokens": tokens,
-			"device": deviceResult,
+			"user":        user.ToResponse(),
+			"tokens":      tokens,
+			"device":      deviceResult,
+			"permissions": permissions,
 		},
 	})
 }

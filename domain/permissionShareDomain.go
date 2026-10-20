@@ -2,7 +2,6 @@ package domain
 
 import (
 	"errors"
-	"strconv"
 
 	"studio_backend/db"
 	"studio_backend/models"
@@ -135,45 +134,15 @@ func SetRolePermissions(role *models.Role, dom *models.Domain, codes []string) (
 			return err
 		}
 
-		rows, err := visiblePermissionRows(tx, dom)
+		ids, resolveIssues, err := resolveRoleCodes(tx, dom, codes)
 		if err != nil {
 			return err
 		}
-		byCode := make(map[string]*models.Permission, len(rows))
-		for i := range rows {
-			byCode[rows[i].Code] = &rows[i]
-		}
-
-		ids := make([]uint64, 0, len(codes))
-		seen := map[uint64]bool{}
-		for i, code := range codes {
-			node := byCode[code]
-			path := "codes[" + strconv.Itoa(i) + "]"
-			switch {
-			case node == nil:
-				issues = append(issues, models.PermissionIssue{Path: path, Message: "Code '" + code + "' is not available to this domain"})
-			case node.Level != models.PermissionLevelPermission:
-				issues = append(issues, models.PermissionIssue{Path: path, Message: "Code '" + code + "' is a " + node.Level + "; only permission codes can be given to a role"})
-			case !seen[node.ID]:
-				seen[node.ID] = true
-				ids = append(ids, node.ID)
-			}
-		}
-		if len(issues) > 0 {
+		if len(resolveIssues) > 0 {
+			issues = resolveIssues
 			return nil
 		}
-
-		if err := tx.Where("role_id = ?", role.ID).Delete(&models.RolePermission{}).Error; err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			return nil
-		}
-		links := make([]models.RolePermission, 0, len(ids))
-		for _, id := range ids {
-			links = append(links, models.RolePermission{RoleID: role.ID, PermissionID: id})
-		}
-		return tx.Create(&links).Error
+		return replaceRolePermissions(tx, role.ID, ids)
 	})
 	return issues, err
 }

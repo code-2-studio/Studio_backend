@@ -524,3 +524,28 @@ func PlanPermissionShare(rows []Permission, current map[uint64]bool, mode string
 	sort.Slice(plan.Remove, func(i, j int) bool { return plan.Remove[i] < plan.Remove[j] })
 	return plan, nil
 }
+
+// PermissionCodeLists is a flat view of what someone holds: just the codes, one list per level.
+// It is what login returns. Every list is non-nil, so it serialises as [] when empty.
+type PermissionCodeLists struct {
+	FeatureGroup []string `json:"featureGroup"`
+	Feature      []string `json:"feature"`
+	Permission   []string `json:"permission"`
+}
+
+// PermissionCodes lists the codes in rows, split by level, in creation order.
+// Pass rows already narrowed with FilterPermissionRows so groups and features without a permission are absent.
+func PermissionCodes(rows []Permission) PermissionCodeLists {
+	out := PermissionCodeLists{FeatureGroup: []string{}, Feature: []string{}, Permission: []string{}}
+	for _, r := range rows {
+		switch r.Level {
+		case PermissionLevelGroup:
+			out.FeatureGroup = append(out.FeatureGroup, r.Code)
+		case PermissionLevelFeature:
+			out.Feature = append(out.Feature, r.Code)
+		case PermissionLevelPermission:
+			out.Permission = append(out.Permission, r.Code)
+		}
+	}
+	return out
+}

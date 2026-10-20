@@ -106,3 +106,39 @@ func domainForRequest(c *fiber.Ctx, requestedName string) (*models.Domain, bool)
 	}
 	return dom, true
 }
+
+// domainForRead resolves the domain a read-only request refers to: your own when requestedName is
+// empty, otherwise the named one if it is below yours (shutterx may name any). Anything you may not
+// see is reported as not found.
+func domainForRead(c *fiber.Ctx, requestedName string) (*models.Domain, bool) {
+	user, authenticated := currentUser(c)
+	if !authenticated || user.Domain == nil {
+		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusUnauthorized,
+			"message": "Unauthorized: Authentication required",
+		})
+		return nil, false
+	}
+
+	requested := models.NormalizeDomainName(requestedName)
+	if requested == "" || requested == user.Domain.Name {
+		return user.Domain, true
+	}
+
+	target, err := domain.GetDomainByName(requested)
+	visible := err == nil && target != nil
+	if visible && !user.Domain.IsRoot() {
+		within, withinErr := domain.IsDomainWithin(user.DomainID, target.ID)
+		visible = withinErr == nil && within
+	}
+	if !visible {
+		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusNotFound,
+			"message": "Domain not found",
+		})
+		return nil, false
+	}
+	return target, true
+}

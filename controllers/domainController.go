@@ -22,13 +22,27 @@ type UpdateDomainRequest struct {
 	Status      string  `json:"status"`
 }
 
-// GetAllDomains handles paginated domain listing (root superadmin only)
+// GetAllDomains handles paginated domain listing. shutterx sees every domain; any other domain
+// sees the domains below it (the studios it onboarded, and theirs).
 func GetAllDomains(c *fiber.Ctx) error {
+	user, ok := currentUser(c)
+	if !ok || user.Domain == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusUnauthorized,
+			"message": "Unauthorized: Authentication required",
+		})
+	}
+	ancestorID := uint64(0)
+	if !user.Domain.IsRoot() {
+		ancestorID = user.DomainID
+	}
+
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size", "10"))
 	keyword := strings.TrimSpace(c.Query("keyword", ""))
 
-	domains, total, err := domain.GetAllDomains(page, pageSize, keyword)
+	domains, total, err := domain.GetAllDomains(page, pageSize, keyword, ancestorID)
 	if err != nil {
 		utils.Logger.Errorw("Failed to fetch domains", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -56,8 +70,17 @@ func GetAllDomains(c *fiber.Ctx) error {
 	})
 }
 
-// GetDomainByID returns a single domain
+// GetDomainByID returns a single domain: any domain for shutterx, otherwise your own or one below it
 func GetDomainByID(c *fiber.Ctx) error {
+	user, ok := currentUser(c)
+	if !ok || user.Domain == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusUnauthorized,
+			"message": "Unauthorized: Authentication required",
+		})
+	}
+
 	id, err := strconv.ParseUint(c.Params("id"), 10, 64)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -65,6 +88,16 @@ func GetDomainByID(c *fiber.Ctx) error {
 			"code":    http.StatusBadRequest,
 			"message": "Invalid domain ID",
 		})
+	}
+
+	if !user.Domain.IsRoot() && id != user.DomainID {
+		if within, err := domain.IsDomainWithin(user.DomainID, id); err != nil || !within {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusNotFound,
+				"message": "Domain not found",
+			})
+		}
 	}
 
 	dom, err := domain.GetDomainByID(id)

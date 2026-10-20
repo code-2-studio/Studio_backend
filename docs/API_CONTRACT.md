@@ -25,7 +25,7 @@ Every response, success or failure:
 Failures have `"status": false`, no `data`, and sometimes an `errors` array (section 2.3).
 
 ### Authentication
-Every endpoint except register, login, refresh, logout and the health checks needs:
+Every endpoint except register, login, refresh, logout, the first-run setup calls (see [SETUP_API.md](SETUP_API.md)) and the health checks needs:
 
 ```
 Authorization: Bearer <access_token>
@@ -129,11 +129,24 @@ Public.
   "data": {
     "user": { "…": "user object" },
     "tokens": { "access_token": "…", "refresh_token": "…", "token_type": "Bearer", "expires_in": 3600 },
-    "device": { "device_id": "web-123", "is_new_device": true }
+    "device": { "device_id": "web-123", "is_new_device": true },
+    "permissions": {
+      "featureGroup": ["gRe3"],
+      "feature": ["uhMf"],
+      "permission": ["vFe3", "Tq8c"]
+    }
   }
 }
 ```
 `device` is `null` when no `device_info.device_id` was sent.
+
+`permissions` is **only codes**, in three flat lists: the codes of the feature groups, features and permissions the user holds. It is everything granted by **all of the user's roles**, merged (a code granted by two roles appears once). A feature group or feature is listed when the user holds at least one permission under it. All three lists are `[]` when none of the user's roles has any permission. Codes are case-sensitive.
+
+To check access, look for a code in the list: for example `permissions.permission.includes("vFe3")`. Names and the group/feature structure are not returned here; use `GET /permissions` if you need them.
+
+**The `shutterx` superadmin is the exception: it always receives every code in the catalog**, from every domain, whether or not its role has any permission assigned, and codes created later are included automatically.
+
+The lists are a snapshot from login time. `POST /auth/refresh` does not return them, so changes made to the user's roles later only show up the next time they sign in.
 Errors: 400 (missing login/password), 401 `Invalid login or password` (unknown domain, user or password – deliberately the same), 403 account or domain inactive.
 
 ### POST /auth/refresh
@@ -204,11 +217,15 @@ Errors: 404 user not found, 409 email/username taken in that domain, 400 `role_i
 
 ## 6. Roles  *(signed-in users; scoped to the caller's domain)*
 
+The full roles contract, including create/update with permissions and listing another domain's roles, is in [ROLES_API.md](ROLES_API.md).
+
 | Call | Body | Success |
 |---|---|---|
 | `GET /roles` | – (`?domain=` for the superadmin) | `data: [Role]` |
 | `GET /roles/:id` | – | `data: Role` |
-| `POST /roles` | `{ "name", "description?" }` | `201`, `data: Role` (409 if the name exists in the domain) |
+| `POST /roles` | `{ "name", "description?", "codes?", "domain?" }` | `201`, `data: Role` (409 if the name exists in the domain). `codes` gives the role permissions in the same step; `domain` is shutterx superadmin only. |
+| `PUT /roles` | `{ "role_id", "name?", "description?", "codes?", "domain?" }` | `data: Role`. Changes only what is sent; `codes` replaces the role's permissions. |
+| `POST /roles/list` | `{ "domain?", "keyword?" }` | `data: [Role]` for your own domain or one below it |
 | `POST /roles/assign` | `{ "user_id", "role_id" }` | `data: User` (404 unless both are in the domain) |
 | `PUT /roles/permissions` | see below | `data: Role` |
 
@@ -226,7 +243,7 @@ Replaces **all** permissions of one role.
 
 ---
 
-## 7. Domains  *(shutterx superadmin only; others get 403)*
+## 7. Domains  *(reading: any signed-in user, scoped; creating/editing: shutterx superadmin)*
 
 Domain object:
 ```json
@@ -234,15 +251,17 @@ Domain object:
 ```
 `parent` is `null` for `shutterx` itself.
 
+A studio is created with `POST /studios`, and its saved owner and studio details are read and edited with `GET`/`PUT /studios/:id` (see [STUDIO_ONBOARDING_API.md](STUDIO_ONBOARDING_API.md)). Its parent is the domain of whoever creates it, so the tree can be several levels deep.
+
 | Call | Body | Success |
 |---|---|---|
-| `GET /domains?page=1&page_size=10&keyword=ac` | – | `data: { domains: [Domain], total, page, page_size }` |
-| `GET /domains/:id` | – | `data: Domain` |
-| `POST /domains` | `{ "name": "acme", "display_name?": "Acme Studio" }` | `201`, `data: Domain` |
-| `PUT /domains/:id` | `{ "display_name?", "status?": "active" or "inactive" }` | `data: Domain` |
+| `GET /domains?page=1&page_size=10&keyword=ac` | – | `data: { domains: [Domain], total, page, page_size }`. Shutterx sees every domain; any other domain sees the domains below it (not itself). |
+| `GET /domains/:id` | – | `data: Domain`. Shutterx can read any domain; others only their own or one below it, otherwise 404. |
+| `POST /domains` | `{ "name": "acme", "display_name?": "Acme Studio" }` (shutterx superadmin only) | `201`, `data: Domain`, a child of `shutterx` |
+| `PUT /domains/:id` | `{ "display_name?", "status?": "active" or "inactive" }` (shutterx superadmin only) | `data: Domain` |
 
 - Domain names: 3–50 chars, lowercase letters, digits and hyphens (no dots), unique ignoring case. 422 if invalid, 409 if taken.
-- The `shutterx` domain cannot be modified (403). New domains are always children of `shutterx`.
+- The `shutterx` domain cannot be modified (403). `POST /domains` always creates a child of `shutterx`; studios created through onboarding are children of the creator's domain.
 - An inactive domain blocks login, refresh and all calls for its users.
 
 ---
@@ -294,7 +313,7 @@ Creates permissions owned by the caller's domain. Send your tree, or an array of
 - A code owned by another domain, or a group owned by another domain (even one shared with you), cannot be used or extended: `409` `Code '…' is already in use`.
 - `201` with `data: { "created": 3, "existing": 0, "featureGroup": {…} }` (array input → `featureGroups: [ {featureGroup}, … ]`); `200` with `created: 0` when everything already existed.
 - `409` when a code already exists as another level / under another parent / with another name, or a name is already used under the same parent. `422` for missing/invalid names or codes, unknown JSON keys (e.g. `features`), or duplicate codes inside the request.
-- New permissions are automatically given to the `shutterx` `superadmin` role, whichever domain created them.
+- Creating permissions only saves them to the permission table. No role is given anything automatically; use `PUT /roles/permissions` to give a role its permissions.
 
 ### PUT /permissions   *(any signed-in user, own domain's permissions only)*
 Renames an item and/or changes its code. The item must have been created by the caller's domain, otherwise `403`.

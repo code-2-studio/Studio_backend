@@ -249,3 +249,22 @@ func TestOwnerStillGetsIdempotentAndNameClashChecks(t *testing.T) {
 		t.Fatalf("owner must not duplicate its own group name: %+v", issues)
 	}
 }
+
+func TestPermissionCodesAreFlatListsByLevel(t *testing.T) {
+	// acme was given only "read" (4) and "view" (6); the group and both features above them come along
+	visible := FilterPermissionRows(catalog(), map[uint64]bool{4: true, 6: true})
+	codes := PermissionCodes(visible)
+
+	raw, _ := json.Marshal(codes)
+	want := `{"featureGroup":["gRe3"],"feature":["uhMf","Lk01"],"permission":["vFe3","Vw02"]}`
+	if string(raw) != want {
+		t.Fatalf("\n got %s\nwant %s", raw, want)
+	}
+}
+
+func TestPermissionCodesAreEmptyListsNotNull(t *testing.T) {
+	raw, _ := json.Marshal(PermissionCodes(FilterPermissionRows(catalog(), map[uint64]bool{})))
+	if string(raw) != `{"featureGroup":[],"feature":[],"permission":[]}` {
+		t.Fatalf("empty lists must serialise as [], got %s", raw)
+	}
+}

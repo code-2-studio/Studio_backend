@@ -57,7 +57,26 @@ func GetDomainByName(name string) (*models.Domain, error) {
 	return &dom, nil
 }
 
-func GetAllDomains(page, pageSize int, keyword string) ([]models.Domain, int64, error) {
+// descendantsSQL selects the ids of every domain below the given one, at any depth.
+const descendantsSQL = `WITH RECURSIVE tree AS (
+	SELECT id FROM domains WHERE parent_id = ?
+	UNION ALL
+	SELECT d.id FROM domains d JOIN tree t ON d.parent_id = t.id
+) SELECT id FROM tree`
+
+// IsDomainWithin reports whether domainID is a child, grandchild, ... of ancestorID.
+func IsDomainWithin(ancestorID, domainID uint64) (bool, error) {
+	if db.DB == nil {
+		return false, errors.New("database not connected")
+	}
+
+	var within bool
+	err := db.DB.Raw("SELECT EXISTS (SELECT 1 FROM ("+descendantsSQL+") sub WHERE id = ?)", ancestorID, domainID).Scan(&within).Error
+	return within, err
+}
+
+// GetAllDomains lists domains. ancestorID restricts the list to that domain's descendants (0 = every domain).
+func GetAllDomains(page, pageSize int, keyword string, ancestorID uint64) ([]models.Domain, int64, error) {
 	if db.DB == nil {
 		return nil, 0, errors.New("database not connected")
 	}
@@ -73,6 +92,9 @@ func GetAllDomains(page, pageSize int, keyword string) ([]models.Domain, int64, 
 	var total int64
 
 	query := db.DB.Model(&models.Domain{})
+	if ancestorID != 0 {
+		query = query.Where("id IN ("+descendantsSQL+")", ancestorID)
+	}
 	if keyword != "" {
 		likeTerm := "%" + strings.ToLower(keyword) + "%"
 		query = query.Where("lower(name) LIKE ? OR lower(display_name) LIKE ?", likeTerm, likeTerm)

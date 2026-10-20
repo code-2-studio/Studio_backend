@@ -137,7 +137,7 @@ func moveLegacyRowsToRoot(database *gorm.DB, rootID uint64) error {
 }
 
 // seedSuperAdmin makes sure superadmin@shutterx exists. It is idempotent: an existing user is never
-// modified (its password is left alone); the superadmin role is re-synced with all permissions on each start.
+// modified (its password is left alone). The role is created empty: permissions are never granted to a role automatically.
 // The password comes from SUPERADMIN_PASSWORD and is never hardcoded.
 func seedSuperAdmin(database *gorm.DB, root *models.Domain) error {
 	description := "Full access to the root domain and every child domain"
@@ -146,20 +146,6 @@ func seedSuperAdmin(database *gorm.DB, root *models.Domain) error {
 		Attrs(models.Role{Description: &description}).
 		FirstOrCreate(&role, models.Role{DomainID: root.ID, Name: models.SuperAdminRoleName}).Error; err != nil {
 		return fmt.Errorf("seed superadmin role: %w", err)
-	}
-
-	var permissionIDs []uint64
-	if err := database.Model(&models.Permission{}).Where("level = ?", models.PermissionLevelPermission).Pluck("id", &permissionIDs).Error; err != nil {
-		return fmt.Errorf("list permissions: %w", err)
-	}
-	if len(permissionIDs) > 0 {
-		links := make([]models.RolePermission, 0, len(permissionIDs))
-		for _, id := range permissionIDs {
-			links = append(links, models.RolePermission{RoleID: role.ID, PermissionID: id})
-		}
-		if err := database.Clauses(clause.OnConflict{DoNothing: true}).Create(&links).Error; err != nil {
-			return fmt.Errorf("grant permissions to superadmin role: %w", err)
-		}
 	}
 
 	username := models.NormalizeUsername(utils.GetEnv("SUPERADMIN_USERNAME", "superadmin"))

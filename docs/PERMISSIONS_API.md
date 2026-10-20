@@ -115,7 +115,7 @@ Creates permissions owned by the caller's domain. No role is checked. Send one t
   "errors": [ { "path": "featureGroup.feature[0].code", "message": "Code 'uhMf' already exists under a different parent" } ] }
 ```
 `422`: missing or invalid name or code, an unknown key such as `features`, or a duplicate code or name inside the request.
-New permissions are automatically given to the shutterx `superadmin` role, whichever domain created them.
+Creating permissions only saves them to the permission table. No role is given anything automatically; use `PUT /roles/permissions` to give a role its permissions.
 
 ## 4. PUT /permissions   (any signed-in user, own domain's permissions only)
 Renames an item and/or changes its code. No role is checked, but the item must have been created by the caller's domain.

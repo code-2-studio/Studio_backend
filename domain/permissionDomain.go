@@ -7,7 +7,6 @@ import (
 	"studio_backend/models"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var (
@@ -165,66 +164,40 @@ func CreatePermissions(ownerDomainID uint64, groups []models.FeatureGroupItem, i
 			return nil
 		}
 
-		idByCode := make(map[string]uint64, len(rows)+len(plan))
-		for _, r := range rows {
-			idByCode[r.Code] = r.ID
-		}
-
-		var newPermissionIDs []uint64
-		for _, p := range plan {
-			node := models.Permission{
-				DomainID: ownerDomainID,
-				Level:    p.Level,
-				Name:     p.Name,
-				Code:     p.Code,
-			}
-			if p.ParentCode != "" {
-				parentID := idByCode[p.ParentCode]
-				node.ParentID = &parentID
-			}
-			if err := tx.Create(&node).Error; err != nil {
-				return err
-			}
-			idByCode[p.Code] = node.ID
-			if p.Level == models.PermissionLevelPermission {
-				newPermissionIDs = append(newPermissionIDs, node.ID)
-			}
+		if err := insertPlannedPermissions(tx, ownerDomainID, rows, plan); err != nil {
+			return err
 		}
 		created = len(plan)
-
-		return grantToRootSuperAdmin(tx, newPermissionIDs)
+		return nil
 	})
 	return created, existing, issues, err
 }
 
-// grantToRootSuperAdmin keeps the shutterx superadmin role holding every permission, whoever created it.
-func grantToRootSuperAdmin(tx *gorm.DB, permissionIDs []uint64) error {
-	if len(permissionIDs) == 0 {
-		return nil
+// insertPlannedPermissions creates the planned nodes for ownerDomainID, parents before their children.
+// existing are the rows already stored, used to find the parent of a node whose parent is not new.
+func insertPlannedPermissions(tx *gorm.DB, ownerDomainID uint64, existing []models.Permission, plan []models.PlannedPermission) error {
+	idByCode := make(map[string]uint64, len(existing)+len(plan))
+	for _, r := range existing {
+		idByCode[r.Code] = r.ID
 	}
 
-	var root models.Domain
-	if err := tx.Where("parent_id IS NULL").First(&root).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+	for _, p := range plan {
+		node := models.Permission{
+			DomainID: ownerDomainID,
+			Level:    p.Level,
+			Name:     p.Name,
+			Code:     p.Code,
 		}
-		return err
+		if p.ParentCode != "" {
+			parentID := idByCode[p.ParentCode]
+			node.ParentID = &parentID
+		}
+		if err := tx.Create(&node).Error; err != nil {
+			return err
+		}
+		idByCode[p.Code] = node.ID
 	}
-
-	var role models.Role
-	err := tx.Where("domain_id = ? AND name = ?", root.ID, models.SuperAdminRoleName).First(&role).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	links := make([]models.RolePermission, 0, len(permissionIDs))
-	for _, id := range permissionIDs {
-		links = append(links, models.RolePermission{RoleID: role.ID, PermissionID: id})
-	}
-	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&links).Error
+	return nil
 }
 
 // UpdatePermission renames a node and/or changes its code. Nil means "leave unchanged".
@@ -291,4 +264,45 @@ func UpdatePermission(callerDomainID uint64, code string, newName, newCode *stri
 		return "", err
 	}
 	return finalCode, nil
+}
+
+// GetUserPermissionCodes returns the codes of every feature group, feature and permission the user holds
+// through any of their roles. Each code appears once even if several roles grant it. A user whose roles
+// have no permissions gets three empty lists.
+func GetUserPermissionCodes(userID uint64) (models.PermissionCodeLists, error) {
+	if db.DB == nil {
+		return models.PermissionCodeLists{}, errors.New("database not connected")
+	}
+
+	var ids []uint64
+	err := db.DB.Table("role_permissions AS rp").
+		Joins("JOIN user_roles ur ON ur.role_id = rp.role_id").
+		Where("ur.user_id = ?", userID).
+		Pluck("rp.permission_id", &ids).Error
+	if err != nil {
+		return models.PermissionCodeLists{}, err
+	}
+	allowed := make(map[uint64]bool, len(ids))
+	for _, id := range ids {
+		allowed[id] = true
+	}
+
+	var rows []models.Permission
+	if err := db.DB.Order("id ASC").Find(&rows).Error; err != nil {
+		return models.PermissionCodeLists{}, err
+	}
+	return models.PermissionCodes(models.FilterPermissionRows(rows, allowed)), nil
+}
+
+// GetDomainPermissionCodes returns the codes of everything a domain can see (for shutterx: every permission).
+func GetDomainPermissionCodes(dom *models.Domain) (models.PermissionCodeLists, error) {
+	if db.DB == nil {
+		return models.PermissionCodeLists{}, errors.New("database not connected")
+	}
+
+	rows, err := visiblePermissionRows(db.DB, dom)
+	if err != nil {
+		return models.PermissionCodeLists{}, err
+	}
+	return models.PermissionCodes(rows), nil
 }

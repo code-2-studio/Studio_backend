@@ -2,10 +2,10 @@ package routes
 
 import (
 	"net/http"
+	"time"
 
 	"studio_backend/controllers"
 	"studio_backend/middlewares"
-	"studio_backend/models"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -57,18 +57,28 @@ func LiveSetup(app *fiber.App) {
 	auth.Post("/refresh", controllers.RefreshToken)
 	auth.Post("/logout", controllers.Logout)
 
+	// First-run setup (public, but needs SETUP_KEY and only works until a superadmin exists).
+	// Rate limited so the key cannot be guessed.
+	setup := live.Group("/v1/setup")
+	setup.Get("/status", controllers.SetupStatus)
+	setup.Post("/", middlewares.RateLimitByIP(5, time.Minute), controllers.Setup)
+
 	// Everything below requires a signed-in user; data is scoped to the caller's domain
 	authenticated := middlewares.RoleCheckMiddleware()
 
-	// Domains Group (root domain superadmin only)
-	domains := live.Group("/v1/domains",
-		middlewares.RoleCheckMiddleware(models.SuperAdminRoleName),
-		middlewares.RootSuperAdminMiddleware(),
-	)
+	// Domains Group: reading is scoped to the caller's domain tree; creating/editing is shutterx superadmin only
+	domains := live.Group("/v1/domains", authenticated)
 	domains.Get("/", controllers.GetAllDomains)
 	domains.Get("/:id", controllers.GetDomainByID)
-	domains.Post("/", controllers.CreateDomain)
-	domains.Put("/:id", controllers.UpdateDomain)
+	domains.Post("/", middlewares.RootSuperAdminMiddleware(), controllers.CreateDomain)
+	domains.Put("/:id", middlewares.RootSuperAdminMiddleware(), controllers.UpdateDomain)
+
+	// Studio onboarding: any signed-in user creates a studio (a new domain) below their own domain
+	studios := live.Group("/v1/studios", authenticated)
+	studios.Post("/", controllers.OnboardStudio)
+	studios.Post("/check-domain", controllers.CheckStudioDomain)
+	studios.Get("/:id", controllers.GetStudio)
+	studios.Put("/:id", controllers.UpdateStudio)
 
 	// Users Group
 	users := live.Group("/v1/users", authenticated)
@@ -85,6 +95,8 @@ func LiveSetup(app *fiber.App) {
 	roles.Post("/", controllers.CreateRole)
 	roles.Post("/assign", controllers.AssignRole)
 	roles.Put("/permissions", controllers.SetRolePermissions)
+	roles.Post("/list", controllers.ListRoles)
+	roles.Put("/", controllers.UpdateRole)
 
 	permissions := live.Group("/v1/permissions", authenticated)
 	// Every permission endpoint takes its parameters in the JSON body, never in the URL

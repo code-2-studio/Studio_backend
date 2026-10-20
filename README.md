@@ -335,6 +335,8 @@ SUPERADMIN_USERNAME=superadmin                 # optional
 SUPERADMIN_EMAIL=superadmin@shutterx           # optional
 ```
 
+Alternatively, create the first superadmin through the setup API (`POST /live/api/v1/setup`), which is switched on by setting `SETUP_KEY` in the server's environment. See [docs/SETUP_API.md](docs/SETUP_API.md).
+
 Log in with `{"login": "superadmin@shutterx", "password": "..."}` (or `username` + `domain`). Existing users can keep logging in with their real email address, which is looked up in `shutterx`.
 
 **Important:**

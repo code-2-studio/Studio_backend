@@ -6,23 +6,25 @@ import (
 	"studio_backend/models"
 )
 
-func GetAllRoles() ([]models.Role, error) {
+// GetAllRoles lists roles. domainID restricts the list to one domain (0 = all domains).
+func GetAllRoles(domainID uint64) ([]models.Role, error) {
 	if db.DB == nil {
 		return nil, errors.New("database not connected")
 	}
 
 	var roles []models.Role
-	err := db.DB.Preload("Permissions").Order("id ASC").Find(&roles).Error
+	err := db.DB.Scopes(inDomain(domainID)).Preload("Domain").Preload("Permissions").Order("id ASC").Find(&roles).Error
 	return roles, err
 }
 
-func GetRoleByID(id uint64) (*models.Role, error) {
+// GetRoleByID returns a role. domainID restricts the lookup to one domain (0 = any domain).
+func GetRoleByID(id uint64, domainID uint64) (*models.Role, error) {
 	if db.DB == nil {
 		return nil, errors.New("database not connected")
 	}
 
 	var role models.Role
-	err := db.DB.Preload("Permissions").First(&role, id).Error
+	err := db.DB.Scopes(inDomain(domainID)).Preload("Domain").Preload("Permissions").First(&role, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -55,4 +57,17 @@ func GetAllPermissions() ([]models.Permission, error) {
 	var permissions []models.Permission
 	err := db.DB.Order("module_name ASC, id ASC").Find(&permissions).Error
 	return permissions, err
+}
+
+// GetRoleByName finds a role by name inside one domain.
+func GetRoleByName(domainID uint64, name string) (*models.Role, error) {
+	if db.DB == nil {
+		return nil, errors.New("database not connected")
+	}
+
+	var role models.Role
+	if err := db.DB.Where("domain_id = ? AND name = ?", domainID, name).First(&role).Error; err != nil {
+		return nil, err
+	}
+	return &role, nil
 }

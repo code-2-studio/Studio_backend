@@ -325,6 +325,18 @@ DB_SSLMODE=disable
 
 These variables are examples. The actual variable names must match the configuration loader implemented in the project.
 
+### Domains and the superadmin seed
+
+Every user, role and device belongs to a domain. `shutterx` is the root domain; all other domains are its children and are created through `POST /live/api/v1/domains` by the root superadmin. On startup the backend creates `shutterx` (moving any pre-existing users/roles into it) and, if missing, the user `superadmin@shutterx` with the `superadmin` role:
+
+```env
+SUPERADMIN_PASSWORD=choose_a_strong_password   # required the first time; min 8 characters
+SUPERADMIN_USERNAME=superadmin                 # optional
+SUPERADMIN_EMAIL=superadmin@shutterx           # optional
+```
+
+Log in with `{"login": "superadmin@shutterx", "password": "..."}` (or `username` + `domain`). Existing users can keep logging in with their real email address, which is looked up in `shutterx`.
+
 **Important:**
 
 - Never commit `.env` to Git.

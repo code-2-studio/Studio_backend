@@ -6,6 +6,7 @@ import "time"
 // Currently informational only; a per-user device limit can be enforced on top of it later.
 type UserDevice struct {
 	ID             uint64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	DomainID       uint64     `json:"-" gorm:"not null;index"`
 	UserID         uint64     `json:"user_id" gorm:"not null;uniqueIndex:idx_user_device"`
 	DeviceID       string     `json:"device_id" gorm:"size:100;not null;uniqueIndex:idx_user_device"`
 	DeviceType     string     `json:"device_type" gorm:"size:30"`
@@ -19,6 +20,8 @@ type UserDevice struct {
 	FirstLoginAt   time.Time  `json:"first_login_at"`
 	LastLoginAt    time.Time  `json:"last_login_at"`
 	LoggedOutAt    *time.Time `json:"logged_out_at"` // set on logout, cleared on next login
+
+	Domain *Domain `json:"-" gorm:"foreignKey:DomainID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
 }
 
 func (UserDevice) TableName() string {

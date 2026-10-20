@@ -14,6 +14,8 @@ import (
 )
 
 type RegisterRequest struct {
+	Domain   string  `json:"domain"`
+	Username string  `json:"username"`
 	Name     string  `json:"name"`
 	Email    string  `json:"email"`
 	Phone    *string `json:"phone"`
@@ -32,10 +34,49 @@ type DeviceInfo struct {
 	UserAgent      string `json:"user_agent"`
 }
 
+// LoginRequest identifies the user as "username@domain" (e.g. superadmin@shutterx) in Login,
+// or as separate Username + Domain fields. Email is a legacy alias for Login; a real email
+// address (its host contains a dot) is looked up inside the root domain.
 type LoginRequest struct {
+	Login      string      `json:"login"`
+	Username   string      `json:"username"`
+	Domain     string      `json:"domain"`
 	Email      string      `json:"email"`
 	Password   string      `json:"password"`
 	DeviceInfo *DeviceInfo `json:"device_info,omitempty"`
+}
+
+type loginIdentity struct {
+	Domain   string
+	Username string // set when logging in by username
+	Email    string // set when logging in by real email address
+}
+
+func parseLoginIdentity(req LoginRequest) (loginIdentity, bool) {
+	if req.Username != "" || req.Domain != "" {
+		id := loginIdentity{
+			Domain:   models.NormalizeDomainName(req.Domain),
+			Username: models.NormalizeUsername(req.Username),
+		}
+		return id, id.Domain != "" && id.Username != ""
+	}
+
+	raw := strings.ToLower(strings.TrimSpace(req.Login))
+	if raw == "" {
+		raw = strings.ToLower(strings.TrimSpace(req.Email))
+	}
+
+	at := strings.LastIndex(raw, "@")
+	if at <= 0 || at == len(raw)-1 {
+		return loginIdentity{}, false
+	}
+
+	local, host := raw[:at], raw[at+1:]
+	if strings.Contains(host, ".") {
+		// domain names never contain dots, so this is a real email address (existing users)
+		return loginIdentity{Domain: models.RootDomainName, Email: raw}, true
+	}
+	return loginIdentity{Domain: host, Username: local}, true
 }
 
 // truncate caps client-supplied strings so they fit the column sizes.
@@ -55,7 +96,7 @@ type LoginDevice struct {
 
 // recordLoginDevice stores the device used for this login and returns the response
 // block describing it (nil if no device was sent). Failures are logged, never block login.
-func recordLoginDevice(c *fiber.Ctx, userID uint64, info *DeviceInfo) *LoginDevice {
+func recordLoginDevice(c *fiber.Ctx, domainID, userID uint64, info *DeviceInfo) *LoginDevice {
 	if info == nil || strings.TrimSpace(info.DeviceID) == "" {
 		return nil
 	}
@@ -66,6 +107,7 @@ func recordLoginDevice(c *fiber.Ctx, userID uint64, info *DeviceInfo) *LoginDevi
 	}
 
 	device := models.UserDevice{
+		DomainID:       domainID,
 		UserID:         userID,
 		DeviceID:       truncate(info.DeviceID, 100),
 		DeviceType:     truncate(info.DeviceType, 30),
@@ -116,13 +158,58 @@ func Register(c *fiber.Ctx) error {
 		})
 	}
 
-	// Check if user already exists
-	existing, _ := domain.GetUserByEmail(req.Email)
-	if existing != nil {
+	domainName := models.NormalizeDomainName(req.Domain)
+	if domainName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusBadRequest,
+			"message": "Domain is required",
+		})
+	}
+
+	dom, err := domain.GetDomainByName(domainName)
+	if err != nil || dom == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusNotFound,
+			"message": "Domain not found",
+		})
+	}
+
+	// Root domain accounts are created by the superadmin, never through public sign-up
+	if dom.IsRoot() || dom.Status != models.DomainStatusActive {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusForbidden,
+			"message": "Registration is not open for this domain",
+		})
+	}
+
+	username := models.NormalizeUsername(req.Username)
+	if username == "" {
+		username = models.DeriveUsername(req.Email)
+	}
+	if !models.ValidUsername(username) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusBadRequest,
+			"message": "Username must be 2-50 characters: lowercase letters, digits, '.', '_' or '-'",
+		})
+	}
+
+	// Check if user already exists in this domain
+	if existing, _ := domain.GetUserByEmail(dom.ID, req.Email); existing != nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusConflict,
 			"message": "Email is already registered",
+		})
+	}
+	if existing, _ := domain.GetUserByUsername(dom.ID, username); existing != nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusConflict,
+			"message": "Username is already taken",
 		})
 	}
 
@@ -137,6 +224,8 @@ func Register(c *fiber.Ctx) error {
 	}
 
 	newUser := models.User{
+		DomainID: dom.ID,
+		Username: username,
 		Name:     req.Name,
 		Email:    req.Email,
 		Phone:    req.Phone,
@@ -152,6 +241,7 @@ func Register(c *fiber.Ctx) error {
 			"message": "Failed to create user account",
 		})
 	}
+	newUser.Domain = dom
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"status":  true,
@@ -177,22 +267,37 @@ func Login(c *fiber.Ctx) error {
 		})
 	}
 
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	if req.Email == "" || req.Password == "" {
+	identity, valid := parseLoginIdentity(req)
+	if !valid || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusBadRequest,
-			"message": "Email and password are required",
+			"message": "Login (username@domain) and password are required",
 		})
 	}
 
-	user, err := domain.GetUserByEmail(req.Email)
-	if err != nil || user == nil {
+	// Unknown domain, unknown user and wrong password all give the same answer
+	invalidLogin := func() error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusUnauthorized,
-			"message": "Invalid email or password",
+			"message": "Invalid login or password",
 		})
+	}
+
+	dom, err := domain.GetDomainByName(identity.Domain)
+	if err != nil || dom == nil {
+		return invalidLogin()
+	}
+
+	var user *models.User
+	if identity.Email != "" {
+		user, err = domain.GetUserByEmail(dom.ID, identity.Email)
+	} else {
+		user, err = domain.GetUserByUsername(dom.ID, identity.Username)
+	}
+	if err != nil || user == nil {
+		return invalidLogin()
 	}
 
 	if user.Status != "active" {
@@ -204,10 +309,15 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+		return invalidLogin()
+	}
+
+	// Checked after the password so an inactive domain is not revealed to someone who cannot log in
+	if dom.Status != models.DomainStatusActive {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"status":  false,
-			"code":    http.StatusUnauthorized,
-			"message": "Invalid email or password",
+			"code":    http.StatusForbidden,
+			"message": "Domain is inactive",
 		})
 	}
 
@@ -217,7 +327,7 @@ func Login(c *fiber.Ctx) error {
 	_ = domain.UpdateUser(user)
 
 	// Record the device used for this login (no device limit enforced yet)
-	deviceResult := recordLoginDevice(c, user.ID, req.DeviceInfo)
+	deviceResult := recordLoginDevice(c, user.DomainID, user.ID, req.DeviceInfo)
 	deviceID := ""
 	if deviceResult != nil {
 		deviceID = deviceResult.DeviceID
@@ -230,7 +340,7 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	// Generate access token & refresh token (bound to the device)
-	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, deviceID)
+	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, deviceID, dom.Name)
 	if err != nil {
 		utils.Logger.Errorw("Failed to generate token pair", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -301,8 +411,8 @@ func RefreshToken(c *fiber.Ctx) error {
 		}
 	}
 
-	user, err := domain.GetUserByID(claims.UserID)
-	if err != nil || user == nil {
+	user, err := domain.GetUserByID(claims.UserID, 0)
+	if err != nil || user == nil || user.Domain == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusUnauthorized,
@@ -318,12 +428,20 @@ func RefreshToken(c *fiber.Ctx) error {
 		})
 	}
 
+	if user.Domain.Status != models.DomainStatusActive {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusForbidden,
+			"message": "Domain is inactive",
+		})
+	}
+
 	roleNames := make([]string, 0, len(user.Roles))
 	for _, r := range user.Roles {
 		roleNames = append(roleNames, r.Name)
 	}
 
-	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, claims.DeviceID)
+	tokens, err := utils.GenerateTokenPair(user.ID, user.Email, roleNames, claims.DeviceID, user.Domain.Name)
 	if err != nil {
 		utils.Logger.Errorw("Failed to generate token pair on refresh", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

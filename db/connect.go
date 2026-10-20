@@ -129,7 +129,14 @@ func Connect() {
 // --------------------
 
 func autoMigrate(database *gorm.DB) {
-	err := database.AutoMigrate(
+	// Domains must exist (and legacy rows be moved under shutterx) before domain_id becomes NOT NULL.
+	root, err := migrateDomains(database)
+	if err != nil {
+		utils.Logger.Errorw("❌ Domain migration failed", "error", err)
+		return
+	}
+
+	err = database.AutoMigrate(
 		&models.Permission{},
 		&models.Role{},
 		&models.RolePermission{},
@@ -139,8 +146,12 @@ func autoMigrate(database *gorm.DB) {
 	)
 	if err != nil {
 		utils.Logger.Errorw("❌ Database auto-migration failed", "error", err)
-	} else {
-		utils.Logger.Infow("✅ Database schema auto-migrated successfully")
+		return
+	}
+	utils.Logger.Infow("✅ Database schema auto-migrated successfully")
+
+	if err := seedSuperAdmin(database, root); err != nil {
+		utils.Logger.Errorw("❌ Superadmin seeding failed", "error", err)
 	}
 }
 

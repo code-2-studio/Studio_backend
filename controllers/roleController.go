@@ -24,7 +24,12 @@ type AssignRoleRequest struct {
 
 // GetAllRoles returns all roles
 func GetAllRoles(c *fiber.Ctx) error {
-	roles, err := domain.GetAllRoles()
+	scope, ok := domainScope(c, true)
+	if !ok {
+		return nil
+	}
+
+	roles, err := domain.GetAllRoles(scope)
 	if err != nil {
 		utils.Logger.Errorw("Failed to fetch roles", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -62,18 +67,36 @@ func CreateRole(c *fiber.Ctx) error {
 		})
 	}
 
+	scope, ok := domainScope(c, false)
+	if !ok {
+		return nil
+	}
+
 	role := models.Role{
+		DomainID:    scope,
 		Name:        req.Name,
 		Description: req.Description,
 	}
 
 	if err := domain.CreateRole(&role); err != nil {
+		if existing, _ := domain.GetRoleByName(scope, req.Name); existing != nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusConflict,
+				"message": "Role name already exists in this domain",
+			})
+		}
 		utils.Logger.Errorw("Failed to create role", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusInternalServerError,
 			"message": "Failed to create role",
 		})
+	}
+
+	// Reload so the response carries the domain name
+	if created, err := domain.GetRoleByID(role.ID, scope); err == nil && created != nil {
+		role = *created
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -123,6 +146,22 @@ func AssignRole(c *fiber.Ctx) error {
 		})
 	}
 
+	scope, ok := domainScope(c, false)
+	if !ok {
+		return nil
+	}
+
+	// Both the user and the role must exist in the target domain
+	targetUser, userErr := domain.GetUserByID(req.UserID, scope)
+	targetRole, roleErr := domain.GetRoleByID(req.RoleID, scope)
+	if userErr != nil || targetUser == nil || roleErr != nil || targetRole == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusNotFound,
+			"message": "User or role not found in this domain",
+		})
+	}
+
 	if err := domain.AssignRoleToUser(req.UserID, req.RoleID); err != nil {
 		utils.Logger.Errorw("Failed to assign role to user", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -132,7 +171,7 @@ func AssignRole(c *fiber.Ctx) error {
 		})
 	}
 
-	user, _ := domain.GetUserByID(req.UserID)
+	user, _ := domain.GetUserByID(req.UserID, scope)
 	return c.JSON(fiber.Map{
 		"status":  true,
 		"code":    http.StatusOK,
@@ -153,7 +192,12 @@ func GetRoleByID(c *fiber.Ctx) error {
 		})
 	}
 
-	role, err := domain.GetRoleByID(id)
+	scope, ok := domainScope(c, true)
+	if !ok {
+		return nil
+	}
+
+	role, err := domain.GetRoleByID(id, scope)
 	if err != nil || role == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"status":  false,

@@ -44,6 +44,7 @@ func JWTAuthMiddleware() fiber.Handler {
 		c.Locals("userID", claims.UserID)
 		c.Locals("userEmail", claims.Email)
 		c.Locals("roles", claims.Roles)
+		c.Locals("domain", claims.Domain)
 
 		return c.Next()
 	}
@@ -88,7 +89,7 @@ func RoleCheckMiddleware(allowedRoleNames ...string) fiber.Handler {
 		}
 
 		var user models.User
-		err := db.DB.Preload("Roles").First(&user, userID).Error
+		err := db.DB.Preload("Domain").Preload("Roles").First(&user, userID).Error
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"status":  false,
@@ -104,6 +105,18 @@ func RoleCheckMiddleware(allowedRoleNames ...string) fiber.Handler {
 				"message": "Account is inactive or blocked",
 			})
 		}
+
+		if user.Domain == nil || user.Domain.Status != models.DomainStatusActive {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"status":  false,
+				"code":    fiber.StatusForbidden,
+				"message": "Domain is inactive",
+			})
+		}
+
+		// The user's own record is the source of truth for the domain, not the token
+		c.Locals("domainID", user.DomainID)
+		c.Locals("domain", user.Domain.Name)
 
 		// If no specific roles required, allow active user
 		if len(allowedRoleNames) == 0 {

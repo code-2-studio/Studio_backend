@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,9 +12,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type CreateUserRequest struct {
+	Username string  `json:"username"`
 	Name     string  `json:"name"`
 	Email    string  `json:"email"`
 	Phone    *string `json:"phone"`
@@ -34,7 +37,12 @@ func GetAllUsers(c *fiber.Ctx) error {
 	pageSize, _ := strconv.Atoi(c.Query("page_size", "10"))
 	keyword := strings.TrimSpace(c.Query("keyword", ""))
 
-	users, total, err := domain.GetAllUsers(page, pageSize, keyword)
+	scope, ok := domainScope(c, true)
+	if !ok {
+		return nil
+	}
+
+	users, total, err := domain.GetAllUsers(page, pageSize, keyword, scope)
 	if err != nil {
 		utils.Logger.Errorw("Failed to fetch users", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -74,7 +82,12 @@ func GetUserByID(c *fiber.Ctx) error {
 		})
 	}
 
-	user, err := domain.GetUserByID(id)
+	scope, ok := domainScope(c, true)
+	if !ok {
+		return nil
+	}
+
+	user, err := domain.GetUserByID(id, scope)
 	if err != nil || user == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"status":  false,
@@ -112,13 +125,47 @@ func CreateUser(c *fiber.Ctx) error {
 		})
 	}
 
-	existing, _ := domain.GetUserByEmail(req.Email)
-	if existing != nil {
+	scope, ok := domainScope(c, false)
+	if !ok {
+		return nil
+	}
+
+	username := models.NormalizeUsername(req.Username)
+	if username == "" {
+		username = models.DeriveUsername(req.Email)
+	}
+	if !models.ValidUsername(username) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusBadRequest,
+			"message": "Username must be 2-50 characters: lowercase letters, digits, '.', '_' or '-'",
+		})
+	}
+
+	if existing, _ := domain.GetUserByEmail(scope, req.Email); existing != nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusConflict,
 			"message": "Email is already registered",
 		})
+	}
+	if existing, _ := domain.GetUserByUsername(scope, username); existing != nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusConflict,
+			"message": "Username is already taken",
+		})
+	}
+
+	// The role must belong to the same domain as the new user
+	if req.RoleID > 0 {
+		if role, err := domain.GetRoleByID(req.RoleID, scope); err != nil || role == nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusBadRequest,
+				"message": "Role not found in this domain",
+			})
+		}
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -137,6 +184,8 @@ func CreateUser(c *fiber.Ctx) error {
 	}
 
 	newUser := models.User{
+		DomainID: scope,
+		Username: username,
 		Name:     req.Name,
 		Email:    req.Email,
 		Phone:    req.Phone,
@@ -157,7 +206,7 @@ func CreateUser(c *fiber.Ctx) error {
 		_ = domain.AssignRoleToUser(newUser.ID, req.RoleID)
 	}
 
-	created, _ := domain.GetUserByID(newUser.ID)
+	created, _ := domain.GetUserByID(newUser.ID, scope)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"status":  true,
 		"code":    http.StatusCreated,
@@ -178,7 +227,12 @@ func UpdateUser(c *fiber.Ctx) error {
 		})
 	}
 
-	user, err := domain.GetUserByID(id)
+	scope, ok := domainScope(c, false)
+	if !ok {
+		return nil
+	}
+
+	user, err := domain.GetUserByID(id, scope)
 	if err != nil || user == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"status":  false,
@@ -235,7 +289,19 @@ func DeleteUser(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := domain.DeleteUser(id); err != nil {
+	scope, ok := domainScope(c, false)
+	if !ok {
+		return nil
+	}
+
+	if err := domain.DeleteUser(id, scope); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"status":  false,
+				"code":    http.StatusNotFound,
+				"message": "User not found",
+			})
+		}
 		utils.Logger.Errorw("Failed to delete user", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  false,

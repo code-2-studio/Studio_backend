@@ -4,11 +4,25 @@ import (
 	"time"
 )
 
+const (
+	PermissionLevelGroup      = "group"
+	PermissionLevelFeature    = "feature"
+	PermissionLevelPermission = "permission"
+)
+
+// Permission is one node of the global permission catalog: a feature group, a feature inside a
+// group, or a permission inside a feature. The catalog is stored under the root (shutterx) domain.
+// Roles are granted permission-level nodes only. Only name and code are ever returned to clients.
 type Permission struct {
-	ID             uint64    `json:"id" gorm:"primaryKey;autoIncrement"`
-	ModuleName     string    `json:"module_name" gorm:"size:100;not null"`
-	PermissionName string    `json:"permission_name" gorm:"size:100;not null"`
-	PermissionKey  string    `json:"permission_key" gorm:"size:150;not null;uniqueIndex"`
-	Description    *string   `json:"description" gorm:"size:255"`
-	CreatedAt      time.Time `json:"created_at" gorm:"autoCreateTime"`
+	ID        uint64    `json:"-" gorm:"primaryKey;autoIncrement"`
+	DomainID  uint64    `json:"-" gorm:"not null;index"`
+	Level     string    `json:"-" gorm:"size:20;not null"`
+	ParentID  *uint64   `json:"-" gorm:"index"`
+	Name      string    `json:"name" gorm:"size:100;not null"`
+	Code      string    `json:"code" gorm:"size:32;not null;uniqueIndex"`
+	CreatedAt time.Time `json:"-" gorm:"autoCreateTime"`
+	UpdatedAt time.Time `json:"-" gorm:"autoUpdateTime"`
+
+	Domain *Domain     `json:"-" gorm:"foreignKey:DomainID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
+	Parent *Permission `json:"-" gorm:"foreignKey:ParentID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
 }

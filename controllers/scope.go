@@ -28,6 +28,12 @@ func currentUser(c *fiber.Ctx) (*models.User, bool) {
 //
 // When ok is false the error response has already been written.
 func domainScope(c *fiber.Ctx, allowAll bool) (scope uint64, ok bool) {
+	return domainScopeFor(c, c.Query("domain"), allowAll)
+}
+
+// domainScopeFor is domainScope with the requested domain name passed in, for endpoints that take
+// it from the request body instead of the query string.
+func domainScopeFor(c *fiber.Ctx, requestedName string, allowAll bool) (scope uint64, ok bool) {
 	user, authenticated := currentUser(c)
 	if !authenticated || user.Domain == nil {
 		_ = c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -38,7 +44,7 @@ func domainScope(c *fiber.Ctx, allowAll bool) (scope uint64, ok bool) {
 		return 0, false
 	}
 
-	requested := models.NormalizeDomainName(c.Query("domain"))
+	requested := models.NormalizeDomainName(requestedName)
 	if requested == "" || requested == user.Domain.Name {
 		return user.DomainID, true
 	}
@@ -74,4 +80,29 @@ func domainScope(c *fiber.Ctx, allowAll bool) (scope uint64, ok bool) {
 		return 0, false
 	}
 	return target.ID, true
+}
+
+// domainForRequest resolves the domain a body-driven request refers to: the caller's own domain when
+// requestedName is empty, otherwise the named one (root superadmin only).
+func domainForRequest(c *fiber.Ctx, requestedName string) (*models.Domain, bool) {
+	scope, ok := domainScopeFor(c, requestedName, false)
+	if !ok {
+		return nil, false
+	}
+
+	user, _ := currentUser(c)
+	if scope == user.DomainID {
+		return user.Domain, true
+	}
+
+	dom, err := domain.GetDomainByID(scope)
+	if err != nil || dom == nil {
+		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusNotFound,
+			"message": "Domain not found",
+		})
+		return nil, false
+	}
+	return dom, true
 }

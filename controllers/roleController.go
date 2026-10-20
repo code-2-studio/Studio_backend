@@ -107,26 +107,6 @@ func CreateRole(c *fiber.Ctx) error {
 	})
 }
 
-// GetAllPermissions returns all permissions
-func GetAllPermissions(c *fiber.Ctx) error {
-	permissions, err := domain.GetAllPermissions()
-	if err != nil {
-		utils.Logger.Errorw("Failed to fetch permissions", "error", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  false,
-			"code":    http.StatusInternalServerError,
-			"message": "Failed to retrieve permissions",
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"status":  true,
-		"code":    http.StatusOK,
-		"message": "Permissions retrieved successfully",
-		"data":    permissions,
-	})
-}
-
 // AssignRole assigns a role to a user
 func AssignRole(c *fiber.Ctx) error {
 	var req AssignRoleRequest

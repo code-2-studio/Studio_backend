@@ -136,6 +136,11 @@ func autoMigrate(database *gorm.DB) {
 		return
 	}
 
+	if err := prepareLegacyPermissions(database); err != nil {
+		utils.Logger.Errorw("❌ Permission table migration failed", "error", err)
+		return
+	}
+
 	err = database.AutoMigrate(
 		&models.Permission{},
 		&models.Role{},
@@ -143,9 +148,14 @@ func autoMigrate(database *gorm.DB) {
 		&models.User{},
 		&models.UserRole{},
 		&models.UserDevice{},
+		&models.DomainPermission{},
 	)
 	if err != nil {
 		utils.Logger.Errorw("❌ Database auto-migration failed", "error", err)
+		return
+	}
+	if err := applyPermissionConstraints(database); err != nil {
+		utils.Logger.Errorw("❌ Permission constraints failed", "error", err)
 		return
 	}
 	utils.Logger.Infow("✅ Database schema auto-migrated successfully")

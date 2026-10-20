@@ -149,7 +149,7 @@ func seedSuperAdmin(database *gorm.DB, root *models.Domain) error {
 	}
 
 	var permissionIDs []uint64
-	if err := database.Model(&models.Permission{}).Pluck("id", &permissionIDs).Error; err != nil {
+	if err := database.Model(&models.Permission{}).Where("level = ?", models.PermissionLevelPermission).Pluck("id", &permissionIDs).Error; err != nil {
 		return fmt.Errorf("list permissions: %w", err)
 	}
 	if len(permissionIDs) > 0 {

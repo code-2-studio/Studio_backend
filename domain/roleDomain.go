@@ -49,16 +49,6 @@ func AssignPermissionToRole(roleID, permissionID uint64) error {
 	return db.DB.FirstOrCreate(&rolePermission, rolePermission).Error
 }
 
-func GetAllPermissions() ([]models.Permission, error) {
-	if db.DB == nil {
-		return nil, errors.New("database not connected")
-	}
-
-	var permissions []models.Permission
-	err := db.DB.Order("module_name ASC, id ASC").Find(&permissions).Error
-	return permissions, err
-}
-
 // GetRoleByName finds a role by name inside one domain.
 func GetRoleByName(domainID uint64, name string) (*models.Role, error) {
 	if db.DB == nil {

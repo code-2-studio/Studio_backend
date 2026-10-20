@@ -1,44 +1,18 @@
 package middlewares
 
 import (
-	"strings"
-
 	"studio_backend/db"
 	"studio_backend/models"
-	"studio_backend/utils"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-// JWTAuthMiddleware verifies the Bearer access token
+// JWTAuthMiddleware verifies the access token ("Authorization: Bearer <token>")
 func JWTAuthMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		authHeader := c.Get("Authorization")
-		if authHeader == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"status":  false,
-				"code":    fiber.StatusUnauthorized,
-				"message": "Missing Authorization header",
-			})
-		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"status":  false,
-				"code":    fiber.StatusUnauthorized,
-				"message": "Invalid Authorization header format. Expected 'Bearer <token>'",
-			})
-		}
-
-		tokenString := strings.TrimSpace(parts[1])
-		claims, err := utils.ValidateToken(tokenString, utils.TokenTypeAccess)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"status":  false,
-				"code":    fiber.StatusUnauthorized,
-				"message": err.Error(),
-			})
+		claims, failure := claimsFromRequest(c)
+		if failure != nil {
+			return unauthorized(c, failure.reason, failure.message)
 		}
 
 		c.Locals("userID", claims.UserID)
@@ -55,29 +29,16 @@ func RoleCheckMiddleware(allowedRoleNames ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("userID")
 
-		// If not already authenticated via JWTAuthMiddleware, attempt to extract token
+		// If not already authenticated via JWTAuthMiddleware, validate the token here
 		if userID == nil {
-			authHeader := c.Get("Authorization")
-			if authHeader != "" {
-				parts := strings.SplitN(authHeader, " ", 2)
-				if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-					tokenString := strings.TrimSpace(parts[1])
-					if claims, err := utils.ValidateToken(tokenString, utils.TokenTypeAccess); err == nil {
-						userID = claims.UserID
-						c.Locals("userID", claims.UserID)
-						c.Locals("userEmail", claims.Email)
-						c.Locals("roles", claims.Roles)
-					}
-				}
+			claims, failure := claimsFromRequest(c)
+			if failure != nil {
+				return unauthorized(c, failure.reason, failure.message)
 			}
-		}
-
-		if userID == nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"status":  false,
-				"code":    fiber.StatusUnauthorized,
-				"message": "Unauthorized: Authentication required",
-			})
+			userID = claims.UserID
+			c.Locals("userID", claims.UserID)
+			c.Locals("userEmail", claims.Email)
+			c.Locals("roles", claims.Roles)
 		}
 
 		if db.DB == nil {
@@ -91,11 +52,7 @@ func RoleCheckMiddleware(allowedRoleNames ...string) fiber.Handler {
 		var user models.User
 		err := db.DB.Preload("Domain").Preload("Roles").First(&user, userID).Error
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"status":  false,
-				"code":    fiber.StatusUnauthorized,
-				"message": "User not found or session invalid",
-			})
+			return unauthorized(c, ReasonUserNotFound, "User not found or session invalid")
 		}
 
 		if user.Status != "active" {

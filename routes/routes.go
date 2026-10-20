@@ -84,7 +84,15 @@ func LiveSetup(app *fiber.App) {
 	roles.Get("/:id", controllers.GetRoleByID)
 	roles.Post("/", controllers.CreateRole)
 	roles.Post("/assign", controllers.AssignRole)
+	roles.Put("/permissions", controllers.SetRolePermissions)
 
 	permissions := live.Group("/v1/permissions", authenticated)
-	permissions.Get("/", controllers.GetAllPermissions)
+	// Every permission endpoint takes its parameters in the JSON body, never in the URL
+	permissions.Get("/", controllers.GetAllPermissions)    // what my domain can see
+	permissions.Post("/view", controllers.ViewPermissions) // one code, or another domain's view (root)
+	// Any signed-in user can create permissions (owned by their domain) and edit their own domain's
+	permissions.Post("/", controllers.CreatePermissions)
+	permissions.Put("/", controllers.UpdatePermission)
+	// Any signed-in user can share their own domain's permissions with another domain
+	permissions.Put("/share", controllers.SharePermissions)
 }

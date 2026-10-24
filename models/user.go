@@ -6,6 +6,8 @@ import (
 
 type User struct {
 	ID        uint64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	DomainID  *uint64    `json:"domain_id,omitempty" gorm:"column:domain_id"`
+	Username  *string    `json:"username,omitempty" gorm:"column:username;size:100"`
 	Name      string     `json:"name" gorm:"size:100;not null"`
 	Email     string     `json:"email" gorm:"size:150;not null;uniqueIndex"`
 	Phone     *string    `json:"phone" gorm:"size:20"`
@@ -21,6 +23,8 @@ type User struct {
 
 type UserResponse struct {
 	ID        uint64     `json:"id"`
+	DomainID  *uint64    `json:"domain_id,omitempty"`
+	Username  *string    `json:"username,omitempty"`
 	Name      string     `json:"name"`
 	Email     string     `json:"email"`
 	Phone     *string    `json:"phone"`
@@ -34,6 +38,8 @@ type UserResponse struct {
 func (u *User) ToResponse() UserResponse {
 	return UserResponse{
 		ID:        u.ID,
+		DomainID:  u.DomainID,
+		Username:  u.Username,
 		Name:      u.Name,
 		Email:     u.Email,
 		Phone:     u.Phone,

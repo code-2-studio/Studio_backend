@@ -6,6 +6,7 @@ import (
 
 type Role struct {
 	ID          uint64       `json:"id" gorm:"primaryKey;autoIncrement"`
+	DomainID    *uint64      `json:"domain_id,omitempty" gorm:"column:domain_id"`
 	Name        string       `json:"name" gorm:"size:100;not null;uniqueIndex"`
 	Description *string      `json:"description" gorm:"size:255"`
 	CreatedAt   time.Time    `json:"created_at" gorm:"autoCreateTime"`

@@ -53,6 +53,6 @@ func GetAllPermissions() ([]models.Permission, error) {
 	}
 
 	var permissions []models.Permission
-	err := db.DB.Order("module_name ASC, id ASC").Find(&permissions).Error
+	err := db.DB.Order("id ASC").Find(&permissions).Error
 	return permissions, err
 }

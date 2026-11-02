@@ -6,7 +6,7 @@ import (
 
 type User struct {
 	ID        uint64     `json:"id" gorm:"primaryKey;autoIncrement"`
-	DomainID  *uint64    `json:"domain_id,omitempty" gorm:"column:domain_id"`
+	DomainID  *uint64    `json:"domain_id,omitempty" gorm:"column:studio_id"`
 	Username  *string    `json:"username,omitempty" gorm:"column:username;size:100"`
 	Name      string     `json:"name" gorm:"size:100;not null"`
 	Email     string     `json:"email" gorm:"size:150;not null;uniqueIndex"`

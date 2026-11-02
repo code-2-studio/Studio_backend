@@ -130,6 +130,8 @@ func Connect() {
 
 func autoMigrate(database *gorm.DB) {
 	err := database.AutoMigrate(
+		&models.Domain{},
+		&models.DomainPermission{},
 		&models.Permission{},
 		&models.Role{},
 		&models.RolePermission{},

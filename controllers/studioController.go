@@ -22,20 +22,22 @@ type OwnerPayload struct {
 }
 
 type StudioPayload struct {
-	Name      string  `json:"name"`
-	Slug      string  `json:"slug"`
-	Handle    string  `json:"handle"`
-	Domain    string  `json:"domain"` // fallback
-	Address   string  `json:"address"`
-	City      string  `json:"city"`
-	State     string  `json:"state"`
-	Pincode   string  `json:"pincode"`
-	WhatsApp  *string `json:"whatsapp"`
-	GSTIN     *string `json:"gstin"`
-	Website   *string `json:"website"`
-	Instagram *string `json:"instagram"`
-	Facebook  *string `json:"facebook"`
-	YouTube   *string `json:"youtube"`
+	Name         string  `json:"name"`
+	Domain       string  `json:"domain"`
+	DomainName   string  `json:"domain_name"`
+	Slug         string  `json:"slug"`
+	Handle       string  `json:"handle"`
+	LocationName *string `json:"location_name"`
+	Address      string  `json:"address"`
+	City         string  `json:"city"`
+	State        string  `json:"state"`
+	Pincode      string  `json:"pincode"`
+	WhatsApp     *string `json:"whatsapp"`
+	GSTIN        *string `json:"gstin"`
+	Website      *string `json:"website"`
+	Instagram    *string `json:"instagram"`
+	Facebook     *string `json:"facebook"`
+	YouTube      *string `json:"youtube"`
 }
 
 type AdminPayload struct {
@@ -53,9 +55,11 @@ type CreateStudioRequest struct {
 
 	// Flat field fallbacks for convenient Postman calls
 	StudioName    string `json:"studio_name"`
+	Domain        string `json:"domain"`
+	DomainName    string `json:"domain_name"`
 	Slug          string `json:"slug"`
 	Handle        string `json:"handle"`
-	DomainSlug    string `json:"domain"`
+	DomainSlug    string `json:"domain_slug"`
 	OwnerFullName string `json:"owner_name"`
 	OwnerPhone    string `json:"owner_mobile"`
 	OwnerEmail    string `json:"owner_email"`
@@ -158,21 +162,30 @@ func CreateStudio(c *fiber.Ctx) error {
 		studioName = strings.TrimSpace(req.StudioName)
 	}
 
-	slug := strings.ToLower(strings.TrimSpace(req.Studio.Slug))
-	if slug == "" {
-		slug = strings.ToLower(strings.TrimSpace(req.Studio.Handle))
+	domainName := strings.ToLower(strings.TrimSpace(req.Studio.Domain))
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Studio.DomainName))
 	}
-	if slug == "" {
-		slug = strings.ToLower(strings.TrimSpace(req.Studio.Domain))
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Studio.Slug))
 	}
-	if slug == "" {
-		slug = strings.ToLower(strings.TrimSpace(req.Slug))
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Studio.Handle))
 	}
-	if slug == "" {
-		slug = strings.ToLower(strings.TrimSpace(req.Handle))
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Domain))
 	}
-	if slug == "" {
-		slug = strings.ToLower(strings.TrimSpace(req.DomainSlug))
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.DomainName))
+	}
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Slug))
+	}
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.Handle))
+	}
+	if domainName == "" {
+		domainName = strings.ToLower(strings.TrimSpace(req.DomainSlug))
 	}
 
 	ownerName := strings.TrimSpace(req.Owner.FullName)
@@ -244,11 +257,37 @@ func CreateStudio(c *fiber.Ctx) error {
 		})
 	}
 
-	if !studioSlugRegex.MatchString(slug) {
+	if domainName == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  false,
 			"code":    http.StatusBadRequest,
-			"message": "Studio slug/handle must be 3-50 lowercase alphanumeric characters or hyphens",
+			"message": "Studio domain name is required (e.g. 'domain': 'kapture-studio')",
+		})
+	}
+
+	if !studioSlugRegex.MatchString(domainName) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusBadRequest,
+			"message": "Studio domain name must be 3-50 lowercase alphanumeric characters or hyphens",
+		})
+	}
+
+	// Check domain availability (must be unique)
+	available, reason, err := domain.CheckDomainAvailable(domainName)
+	if err != nil {
+		utils.Logger.Errorw("Studio domain check error", "error", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusInternalServerError,
+			"message": "Error validating studio domain availability",
+		})
+	}
+	if !available {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"status":  false,
+			"code":    http.StatusConflict,
+			"message": "Studio domain name '" + domainName + "' is already " + reason,
 		})
 	}
 
@@ -276,24 +315,6 @@ func CreateStudio(c *fiber.Ctx) error {
 		})
 	}
 
-	// Check studio availability
-	available, reason, err := domain.CheckDomainAvailable(slug)
-	if err != nil {
-		utils.Logger.Errorw("Studio slug check error", "error", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"status":  false,
-			"code":    http.StatusInternalServerError,
-			"message": "Error validating studio availability",
-		})
-	}
-	if !available {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-			"status":  false,
-			"code":    http.StatusConflict,
-			"message": "Studio handle '" + slug + "' is " + reason,
-		})
-	}
-
 	// Check if admin user email is already in use
 	existingUser, _ := domain.GetUserByEmail(adminEmail)
 	if existingUser != nil {
@@ -306,7 +327,7 @@ func CreateStudio(c *fiber.Ctx) error {
 
 	// Build Models
 	studioModel := models.Studio{
-		Name:          slug,
+		Name:          domainName,
 		DisplayName:   &studioName,
 		OwnerName:     ownerName,
 		OwnerMobile:   ownerPhone,
@@ -323,6 +344,28 @@ func CreateStudio(c *fiber.Ctx) error {
 		YouTube:       req.Studio.YouTube,
 	}
 
+	locationName := "Main Branch"
+	if city != "" {
+		locationName = city + " Branch"
+	}
+	if req.Studio.LocationName != nil && strings.TrimSpace(*req.Studio.LocationName) != "" {
+		locationName = strings.TrimSpace(*req.Studio.LocationName)
+	}
+
+	locationModel := models.Location{
+		Name:      locationName,
+		IsPrimary: true,
+		Address:   address,
+		City:      city,
+		State:     state,
+		Pincode:   pincode,
+		Phone:     req.Studio.WhatsApp,
+		Status:    "active",
+	}
+	if locationModel.Phone == nil || *locationModel.Phone == "" {
+		locationModel.Phone = &ownerPhone
+	}
+
 	adminModel := models.User{
 		Username: &adminUsername,
 		Name:     adminName,
@@ -330,7 +373,7 @@ func CreateStudio(c *fiber.Ctx) error {
 		Phone:    &adminMobile,
 	}
 
-	createdStudio, createdAdmin, err := domain.CreateStudio(&studioModel, &adminModel, adminPassword)
+	createdStudio, createdLocation, createdAdmin, assignedPerms, err := domain.CreateStudio(&studioModel, &locationModel, &adminModel, adminPassword)
 	if err != nil {
 		utils.Logger.Errorw("Failed to onboard studio", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -347,6 +390,27 @@ func CreateStudio(c *fiber.Ctx) error {
 		studioDisplayName = *createdStudio.DisplayName
 	}
 
+	type PermissionItem struct {
+		ID          uint64  `json:"id"`
+		Code        string  `json:"code"`
+		Name        string  `json:"name"`
+		Level       string  `json:"level"`
+		ParentID    *uint64 `json:"parent_id,omitempty"`
+		Description *string `json:"description,omitempty"`
+	}
+
+	permItems := make([]PermissionItem, 0, len(assignedPerms))
+	for _, p := range assignedPerms {
+		permItems = append(permItems, PermissionItem{
+			ID:          p.ID,
+			Code:        p.Code,
+			Name:        p.Name,
+			Level:       p.Level,
+			ParentID:    p.ParentID,
+			Description: p.Description,
+		})
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"status":  true,
 		"code":    http.StatusCreated,
@@ -355,6 +419,7 @@ func CreateStudio(c *fiber.Ctx) error {
 			"studio": fiber.Map{
 				"id":         createdStudio.ID,
 				"name":       studioDisplayName,
+				"domain":     createdStudio.Name,
 				"slug":       createdStudio.Name,
 				"handle":     createdStudio.Name,
 				"status":     createdStudio.Status,
@@ -371,17 +436,30 @@ func CreateStudio(c *fiber.Ctx) error {
 				"created_at": createdStudio.CreatedAt,
 				"updated_at": createdStudio.UpdatedAt,
 			},
+			"default_location": fiber.Map{
+				"location_id": createdLocation.LocationID,
+				"name":        createdLocation.Name,
+				"is_primary":  createdLocation.IsPrimary,
+				"address":     createdLocation.Address,
+				"city":        createdLocation.City,
+				"state":       createdLocation.State,
+				"pincode":     createdLocation.Pincode,
+				"phone":       createdLocation.Phone,
+				"status":      createdLocation.Status,
+				"created_at":  createdLocation.CreatedAt,
+			},
 			"owner": fiber.Map{
 				"full_name":      createdStudio.OwnerName,
 				"mobile":         createdStudio.OwnerMobile,
 				"business_email": createdStudio.BusinessEmail,
 			},
 			"admin": fiber.Map{
-				"user_id":  createdAdmin.ID,
-				"login":    loginHandle,
-				"username": adminUsername,
-				"email":    createdAdmin.Email,
-				"role":     "Admin",
+				"user_id":     createdAdmin.ID,
+				"login":       loginHandle,
+				"username":    adminUsername,
+				"email":       createdAdmin.Email,
+				"role":        "Admin",
+				"permissions": permItems,
 			},
 		},
 	})
@@ -407,6 +485,8 @@ func GetStudioByID(c *fiber.Ctx) error {
 			"message": "Studio not found",
 		})
 	}
+
+	locations, _ := domain.GetLocationsByStudioID(id)
 
 	studioName := ""
 	if s.DisplayName != nil {
@@ -437,6 +517,7 @@ func GetStudioByID(c *fiber.Ctx) error {
 				"created_at": s.CreatedAt,
 				"updated_at": s.UpdatedAt,
 			},
+			"locations": locations,
 			"owner": fiber.Map{
 				"full_name":      s.OwnerName,
 				"mobile":         s.OwnerMobile,

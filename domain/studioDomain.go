@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,6 +41,53 @@ var ReservedSubdomains = map[string]bool{
 	"www":       true,
 }
 
+// GenerateSlug generates a clean URL-friendly slug from a name
+func GenerateSlug(name string) string {
+	clean := strings.ToLower(strings.TrimSpace(name))
+	var sb strings.Builder
+	lastHyphen := false
+	for _, r := range clean {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			sb.WriteRune(r)
+			lastHyphen = false
+		} else if !lastHyphen {
+			sb.WriteRune('-')
+			lastHyphen = true
+		}
+	}
+	res := strings.Trim(sb.String(), "-")
+	if len(res) > 50 {
+		res = strings.Trim(res[:50], "-")
+	}
+	if res == "" {
+		res = "studio"
+	}
+	return res
+}
+
+// FindAvailableSlug finds an available unique slug based on a candidate slug
+func FindAvailableSlug(baseSlug string) (string, error) {
+	if baseSlug == "" {
+		baseSlug = "studio"
+	}
+	candidate := baseSlug
+	suffix := 1
+	for {
+		available, _, err := CheckDomainAvailable(candidate)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+		candidate = fmt.Sprintf("%s-%d", baseSlug, suffix)
+		suffix++
+		if suffix > 100 {
+			return "", errors.New("unable to generate unique studio slug")
+		}
+	}
+}
+
 // CheckDomainAvailable checks if a studio slug is available
 func CheckDomainAvailable(slug string) (bool, string, error) {
 	if db.DB == nil {
@@ -63,24 +111,27 @@ func CheckDomainAvailable(slug string) (bool, string, error) {
 	return true, "", nil
 }
 
-// CreateStudio creates a new studio, admin role, permissions, and admin user in a single transaction
+// CreateStudio creates a new studio, default location, admin role, permissions, and admin user in a single transaction
 func CreateStudio(
 	studioRecord *models.Studio,
+	locationRecord *models.Location,
 	adminUser *models.User,
 	rawPassword string,
-) (*models.Studio, *models.User, error) {
+) (*models.Studio, *models.Location, *models.User, []models.Permission, error) {
 	if db.DB == nil {
-		return nil, nil, errors.New("database not connected")
+		return nil, nil, nil, nil, errors.New("database not connected")
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, nil, errors.New("failed to hash admin password")
+		return nil, nil, nil, nil, errors.New("failed to hash admin password")
 	}
 	adminUser.Password = string(hashedPassword)
 
 	var createdStudio models.Studio
+	var createdLocation models.Location
 	var createdUser models.User
+	var assignedPerms []models.Permission
 
 	err = db.DB.Transaction(func(tx *gorm.DB) error {
 		// 1. Insert studio (contains all profile fields directly)
@@ -94,7 +145,16 @@ func CreateStudio(
 		}
 		createdStudio = *studioRecord
 
-		// 2. Create Studio "Admin" Role
+		// 2. Insert default primary location
+		locationRecord.StudioID = createdStudio.ID
+		locationRecord.IsPrimary = true
+		locationRecord.Status = "active"
+		if err := tx.Create(locationRecord).Error; err != nil {
+			return err
+		}
+		createdLocation = *locationRecord
+
+		// 3. Create Studio "Admin" Role
 		roleDescription := "Studio administrator"
 		studioAdminRole := models.Role{
 			DomainID:    &createdStudio.ID,
@@ -105,9 +165,11 @@ func CreateStudio(
 			return err
 		}
 
-		// 3. Copy default permissions for this studio in batch
+		// 4. Copy default permissions for this studio in batch
 		var defaultPermIDs []uint64
-		_ = tx.Table("studio_permissions").Where("studio_id = 4").Pluck("permission_id", &defaultPermIDs)
+		if studioRecord.ParentID != nil && *studioRecord.ParentID > 1 {
+			_ = tx.Table("studio_permissions").Where("studio_id = ?", *studioRecord.ParentID).Pluck("permission_id", &defaultPermIDs)
+		}
 		if len(defaultPermIDs) == 0 {
 			_ = tx.Table("permissions").Where("(domain_id = 1 OR domain_id = 0) AND parent_id IS NOT NULL").Pluck("id", &defaultPermIDs)
 		}
@@ -137,14 +199,19 @@ func CreateStudio(
 			}
 		}
 
-		// 4. Create the studio Admin user
+		// Load full permission details
+		if len(defaultPermIDs) > 0 {
+			_ = tx.Where("id IN ?", defaultPermIDs).Order("id ASC").Find(&assignedPerms)
+		}
+
+		// 5. Create the studio Admin user
 		adminUser.DomainID = &createdStudio.ID
 		adminUser.Status = "active"
 		if err := tx.Create(adminUser).Error; err != nil {
 			return err
 		}
 
-		// 5. Assign the Admin role to user
+		// 6. Assign the Admin role to user
 		userRole := models.UserRole{
 			UserID: adminUser.ID,
 			RoleID: studioAdminRole.ID,
@@ -162,10 +229,10 @@ func CreateStudio(
 	})
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	return &createdStudio, &createdUser, nil
+	return &createdStudio, &createdLocation, &createdUser, assignedPerms, nil
 }
 
 // GetStudioByID retrieves a studio by its ID
@@ -180,6 +247,20 @@ func GetStudioByID(id uint64) (*models.Studio, error) {
 	}
 
 	return &s, nil
+}
+
+// GetLocationsByStudioID retrieves all locations for a given studio
+func GetLocationsByStudioID(studioID uint64) ([]models.Location, error) {
+	if db.DB == nil {
+		return nil, errors.New("database not connected")
+	}
+
+	var locations []models.Location
+	if err := db.DB.Where("studio_id = ?", studioID).Order("is_primary DESC, location_id ASC").Find(&locations).Error; err != nil {
+		return nil, err
+	}
+
+	return locations, nil
 }
 
 // UpdateStudio updates studio details
